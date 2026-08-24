@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视觉小说目录 · 莫比乌斯之夏</title>
+<meta name="description" content="视觉小说项目目录：终电后等。">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header>
+  <a class="site-name" href="index.html">莫比乌斯之夏<span class="en">MOBIUS SUMMER</span></a>
+  <button class="menu-btn" id="menuBtn" aria-label="菜单">☰</button>
+  <nav id="nav">
+    <a href="index.html#about">关于</a>
+    <a href="index.html#lore">设定集</a>
+    <a href="vn.html" class="active">视觉小说</a>
+    <a href="index.html#contact">联系</a>
+  </nav>
+</header>
+
+<div class="page">
+
+  <div class="hero" style="min-height:auto; padding: 4.5rem 0 3.5rem;">
+    <div class="kicker">VISUAL NOVEL</div>
+    <h1 style="font-size: clamp(1.8rem, 4vw, 2.6rem);">视觉小说目录</h1>
+    <p class="tagline">每一个故事都有独立的页面。点击项目卡片进入。</p>
+  </div>
+
+  <section style="border-bottom:none; padding-top:0;">
+    <div class="grid">
+
+      <a class="card vn-card" href="vn/terminal-after.html">
+        <span class="tag">日式恐怖 · 规则怪谈</span>
+        <h3>终电后</h3>
+        <p>深夜电车末班之后，某个不该存在的车站「水無月駅」。规则怪谈与视线恐怖，九话结构，剧本已完成，视觉小说化进行中。</p>
+        <div class="status">可查看项目页 →</div>
+      </a>
+
+      <div class="card vn-card" style="opacity:0.55; cursor: default;">
+        <span class="tag">未定名</span>
+        <h3>下一个项目</h3>
+        <p>占位卡片。新的视觉小说项目在此追加，卡片会自动加入目录。</p>
+        <div class="status">筹备中</div>
+      </div>
+
+    </div>
+  </section>
+
+  <footer>© 2026 円森 綾夕 · mori-ayayu.github.io</footer>
+
+</div>
+
+<script>
+  const btn = document.getElementById('menuBtn');
+  const nav = document.getElementById('nav');
+  btn.addEventListener('click', () => nav.classList.toggle('open'));
+  nav.querySelectorAll('a').forEach(a => a.addEventListener('click', () => nav.classList.remove('open')));
+</script>
+</body>
+</html>
