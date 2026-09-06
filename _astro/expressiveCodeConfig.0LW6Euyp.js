@@ -1,1 +1,0 @@
-var e={darkTheme:"one-dark-pro",lightTheme:"one-light",pluginCollapsible:{enable:!0,lineThreshold:15,previewLines:8,defaultCollapsed:!0},pluginLanguageBadge:{enable:!0},pluginLanguageLogo:{enable:!1,color:"mono",excludedLangs:[]}};export{e as t};
