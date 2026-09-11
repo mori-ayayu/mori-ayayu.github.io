@@ -1,0 +1,65 @@
+/* ============================================================
+   CRT SCREEN —— 外壳样式
+   屏幕本体由 WebGL 渲染。这里负责让屏幕始终填满整个
+   浏览器窗口（比例随窗口变化），以及电源 LED
+   ============================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  background: #000;
+  display: flex;
+  overflow: hidden;
+  font-family: "Courier New", monospace;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---- 屏幕容器：始终填满窗口，比例跟随浏览器 ---- */
+.crt-shell {
+  position: relative;
+  flex: 1;
+  cursor: pointer;
+}
+
+/* ---- 玻璃屏面（canvas 本体） ---- */
+#crt {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  box-shadow:
+    inset 0 0 80px 24px rgba(0, 0, 0, 0.42);  /* 玻璃边缘收暗（已减淡，保证四角文字可读） */
+}
+
+/* 玻璃最外缘一圈极淡的环境反光 */
+.crt-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  pointer-events: none;
+}
+
+/* ---- 电源 LED：右下角的小指示灯（通电后由 JS 加 .on） ---- */
+.power-led {
+  position: absolute;
+  right: 0.8%;
+  bottom: 0.9%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1a1a1a;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  opacity: 0.5;
+  transition: all 0.4s ease;
+}
+.power-led.on {
+  background: #e8ffd0;
+  box-shadow:
+    0 0 6px 1px rgba(220, 255, 180, 0.75),
+    0 0 14px 4px rgba(160, 255, 120, 0.35);
+  opacity: 1;
+}
