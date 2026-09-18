@@ -4,14 +4,19 @@
    浏览器窗口（比例随窗口变化），以及电源 LED
    ============================================================ */
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body { height: 100%; }
+@supports (height: 100dvh) {
+  html, body { height: 100dvh; }
+}
 
 body {
   background: #000;
   display: flex;
   overflow: hidden;
+  overscroll-behavior: none;          /* 手机端防下拉刷新/橡皮筋滚动 */
+  touch-action: manipulation;          /* 去掉双击缩放的 300ms 点击延迟 */
   font-family: "Courier New", monospace;
   user-select: none;
   -webkit-user-select: none;

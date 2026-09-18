@@ -285,9 +285,9 @@ CRT.Stage = function (opts) {
   this._rubyGap = 9;   // 注音基线相对主字顶部的上探距离
 
   this.MX = 40;                // 文本左边距（overscan 裁切区外，内容安全区）
-  this.TOP = 40;               // 首行 y
+  this.TOP = 40;               // （保留）安全区上边距
   this.LH = 25;                // 行高（留出振假名空间）
-  this.MAX_ROWS = 16;          // 屏上最多行数（超出上滚）
+  this.MAX_ROWS = 9;           // 已完成后保留行数（打字线在屏幕中心，上方能完整容纳 9 行）
 
   var self = this;
   if (opts && typeof opts.onPowerChange === 'function') {
@@ -450,15 +450,26 @@ CRT.Stage.prototype = {
    * 每帧渲染（引擎调用）
    * ============================================================ */
   render: function (ctx, ms) {
-    // 画布尺寸随时可能随窗口变化（引擎维护），每帧同步
+    // 画布尺寸随窗口变化（引擎维护）；内容包括层仍按 480 设计高绘制，
+    // 竖向窗口时整体垂直居中（上下留出屏幕玻璃的暗区）
+    var pH = ctx.canvas.height;
     this.W = ctx.canvas.width;
-    this.H = ctx.canvas.height;
+    this.H = 480;
+    this._yOff = Math.max(0, Math.round((pH - this.H) / 2));
     this._ctx = ctx;
+
+    // 每帧重置变换（防止上一帧的 translate 累积），先用底色铺满全画布
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = (!this.powered || this.phase === 'boot') ? '#000' : this.color('bg');
+    ctx.fillRect(0, 0, ctx.canvas.width, pH);
+
     if (!this.powered) {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, this.W, this.H);
       return;
     }
+
+    // 进入内容坐标系（设计高 480，居中）
+    ctx.translate(0, this._yOff);
 
     var rel = ms - this.bootAt;
 
@@ -506,15 +517,17 @@ CRT.Stage.prototype = {
   },
 
   /* ============================================================
-   * 指针与点击（坐标均为内容层坐标，由 index.html 换算后传入）
+   * 指针与点击（坐标均为内容层物理坐标，由 index.html 换算后传入；
+   * 竖向窗口时先减去居中偏移，映射到 480 设计坐标系）
    * ============================================================ */
   pointer: function (x, y) {
     this._px = x;
-    this._py = y;
+    this._py = y - (this._yOff || 0);
   },
 
   /* 返回动作名供外部播音效：enter / back / notice / reboot */
   tap: function (x, y) {
+    y = y - (this._yOff || 0);
     switch (this.phase) {
       case 'standby':
         // 字符雨过渡后进入主菜单
@@ -1165,12 +1178,16 @@ CRT.Stage.prototype = {
     var bx = Math.max(this.MX, Math.round((this.W - this._blockMaxW) / 2));
 
     var i;
-    for (i = 0; i < this.rows.length; i++) {
-      this._drawUnits(ctx, this.rows[i].units, bx, this.TOP + i * this.LH, this.color(this.rows[i].c));
+    // 打字基准线固定在屏幕中心：已完成的行向上排列，当前行停在中心，
+    // 新行出现时旧行被顶上去（终端式向上生长）
+    var cy = Math.round(this.H / 2);
+    var n = this.rows.length;
+    for (i = 0; i < n; i++) {
+      this._drawUnits(ctx, this.rows[i].units, bx, cy - (n - i) * this.LH, this.color(this.rows[i].c));
     }
-    // 正在输入的一行
+    // 正在输入的一行（固定在中心线）
     if (this.cur && this.phase !== 'fade') {
-      this._drawUnits(ctx, this.cur.units, bx, this.TOP + this.rows.length * this.LH, this.color(this.cur.c));
+      this._drawUnits(ctx, this.cur.units, bx, cy, this.color(this.cur.c));
     }
     // 光标（打字与停留阶段闪烁）
     if (this.phase === 'text' || this.phase === 'hold') {
@@ -1178,13 +1195,13 @@ CRT.Stage.prototype = {
       if (blinkOn) {
         var y, x = bx;
         if (this.cur) {
-          y = this.TOP + this.rows.length * this.LH;
+          y = cy;
           x += this._unitsWidth(ctx, this.cur.units);
-        } else if (this.rows.length) {
-          y = this.TOP + (this.rows.length - 1) * this.LH;
-          x += this._unitsWidth(ctx, this.rows[this.rows.length - 1].units);
+        } else if (n) {
+          y = cy - this.LH;
+          x += this._unitsWidth(ctx, this.rows[n - 1].units);
         } else {
-          y = this.TOP;
+          y = cy;
         }
         ctx.fillStyle = this.color('bright');
         ctx.globalAlpha = alpha;

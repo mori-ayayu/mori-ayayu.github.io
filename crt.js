@@ -78,20 +78,32 @@ CRT.Engine.prototype = {
   },
 
   _resize: function () {
-    var dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+    var isTouch = (navigator.maxTouchPoints || 0) > 0;
+    var dpr = Math.min(window.devicePixelRatio || 1, isTouch ? 1.5 : 1.75);
     var w = Math.max(2, Math.round(window.innerWidth * dpr));
     var h = Math.max(2, Math.round(window.innerHeight * dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
     }
-    // 内容层（荧光屏原生分辨率）跟随窗口比例：高固定 480，宽按比例
-    // 限制 240~3000，避免极端窗口比例下内存爆炸
-    var cw = Math.max(240, Math.min(3000, Math.round(480 * (w / h))));
-    if (this._content.width !== cw) {
+    // 内容层（荧光屏原生分辨率）跟随窗口比例，但保持“设计宽度”原则：
+    //   横向窗口（宽高比 >= 1）：高固定 480，宽按比例（桌面/横屏手机）
+    //   竖向窗口（宽高比 < 1）：宽固定 480，高按比例（手机竖屏；内容区垂直居中）
+    // 这样窄屏下文字行宽、菜单、设置界面的排版空间都不会被挤坏。
+    var aspect = w / h;
+    var cw, ch;
+    if (aspect >= 1) {
+      ch = 480;
+      cw = Math.max(240, Math.min(3000, Math.round(480 * aspect)));
+    } else {
+      cw = 480;
+      ch = Math.min(3000, Math.round(480 / aspect));
+    }
+    if (this._content.width !== cw || this._content.height !== ch) {
       this._content.width = cw;
-      this._content.height = this.contentHeight;
+      this._content.height = ch;
       this.contentWidth = cw;
+      this.contentHeight = ch;
     }
     if (this.gl) this.gl.viewport(0, 0, w, h);
   },
