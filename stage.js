@@ -130,6 +130,9 @@ var MENU_ITEMS = [
   { id: 'reboot', label: '再起動', ruby: 'さいきどう',     en: 'REBOOT' }
 ];
 
+/* 世界资料数据已移至 world-data.js（由 index.html 在 stage.js 之前加载，
+   结构与填写规则见 world-template.md） */
+
 /* ============================================================
  * 设置界面配置
  * type 'range'：数值项（min~max, step；get/set 均为 (stage) 签名）
@@ -242,6 +245,8 @@ CRT.Stage = function (opts) {
 
   this._settingsBtns = [];     // 设置界面按钮矩形（渲染时更新）
   this._settingsEntryRect = null;  // 菜单里「設定」入口的点击区域
+  this._worldScroll = 0;       // 世界页树视图滚动偏移（像素）
+  this._worldRowsCache = null; // 世界页可见行缓存（展开/折叠后重建）
 
   // 菜单背景图：外部高清图（先做 canvas 污染探测，干净才用）+ 内嵌 data URL 兜底
   // 说明：file:// 直接打开时，本地图片会被浏览器视为跨源，若直接画进 canvas 会让它"变脏"，
@@ -446,6 +451,15 @@ CRT.Stage.prototype = {
     ctx.font = this.font;
   },
 
+  /* 右下角时钟（所有页面统一，与待机页一致） */
+  _drawClockBR: function (ctx) {
+    var d = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var clock = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    var cw = this._unitsWidth(ctx, [{ t: clock }]);
+    this._drawUnits(ctx, [{ t: clock }], this.W - this.MX - cw, this.H - 52, this.color('text'));
+  },
+
   /* ============================================================
    * 每帧渲染（引擎调用）
    * ============================================================ */
@@ -513,6 +527,7 @@ CRT.Stage.prototype = {
       case 'rain':    this._drawRain(ctx, ms); break;
       case 'menu':    this._drawMenu(ctx, ms); break;
       case 'settings': this._drawSettings(ctx, ms); break;
+      case 'world':    this._drawWorld(ctx, ms); break;
     }
   },
 
@@ -549,6 +564,10 @@ CRT.Stage.prototype = {
             this.restart();
             return 'reboot';
           }
+          if (it.id === 'world') {
+            this.phase = 'world';
+            return 'enter';
+          }
           // 占位项：后续在这里按 id 接入真实内容
           this._notice = {
             text: it.label + ' .......... 未接続《みせつぞく》',
@@ -568,6 +587,31 @@ CRT.Stage.prototype = {
             this._adjustSetting(b.idx, b.dir);
             return 'tick';
           }
+        }
+        // 点空白：返回菜单
+        this.phase = 'menu';
+        return 'back';
+      }
+      case 'world': {
+        // 树行：展开 / 折叠（详情行与叶子节点仅轻响）
+        var wi = this._hitWorldRow(x, y);
+        if (wi >= 0) {
+          var row = this._worldRowsCache && this._worldRowsCache[wi];
+          if (row && row.type === 'node') {
+            var node = row.node;
+            var canOpen = (node.children && node.children.length) ||
+                          (node.lines && node.lines.length);
+            if (canOpen) {
+              node.open = !node.open;
+              this._worldRowsCache = null;   // 行列表重建
+            }
+          }
+          return 'tick';
+        }
+        // 左侧「設定」入口
+        if (this._hitSettingsBtn(x, y)) {
+          this.phase = 'settings';
+          return 'enter';
         }
         // 点空白：返回菜单
         this.phase = 'menu';
@@ -631,32 +675,12 @@ CRT.Stage.prototype = {
     };
   },
 
-  /* ---------- 主菜单（宽版：左侧用户栏 + 右侧示波器/菜单） ---------- */
-  _drawMenu: function (ctx, ms) {
-    ctx.fillStyle = this.color('bg');
-    ctx.fillRect(0, 0, this.W, this.H);
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
-    ctx.globalAlpha = 1;
+  /* ---------- 左栏用户面板（菜单 / 世界页共用）：头像框（内嵌李萨如）+ 用户信息 + 設定入口 ---------- */
+  _drawUserPanel: function (ctx, ml, ms) {
     var line = this.color('line');
     var dim = this.color('dim');
     var text = this.color('text');
     var bright = this.color('bright');
-
-    // ---- 顶部状态行与时钟 ----
-    this._drawUnits(ctx, parseRuby('KX-15 :: 機能一覧《きのういちらん》'), this.MX, 46, text);
-    var d = new Date();
-    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
-    var clock = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-    var cw = this._unitsWidth(ctx, [{ t: clock }]);
-    this._drawUnits(ctx, [{ t: clock }], this.W - this.MX - cw, 46, text);
-
-    // ---- 布局（宽/窄自适应，缓存） ----
-    var wide = this.W >= LAYOUT.wideMin;
-    if (!this._ml || this._ml.wide !== wide) this._ml = this._layoutMenu();
-    var ml = this._ml;
-
-    // ================= 左栏：头像框（内嵌微型李萨如图形）+ 用户信息 =================
     var av = ml.avatar;
     ctx.globalAlpha = 1;
     ctx.strokeStyle = dim;
@@ -668,8 +692,8 @@ CRT.Stage.prototype = {
     ctx.fillRect(av.x + 2, av.y + 2, av.s - 4, av.s - 4);
     this._drawLissajous(ctx, av.x + av.s / 2, av.y + av.s / 2, Math.max(8, av.s / 2 - 10), ms * 0.001, line, dim, text, bright);
 
-    if (wide) {
-      // 名字 / 假名 / 罗马字 / 身份（亮度统一到冷启动文字标准，不再额外减淡）
+    if (ml.wide) {
+      // 名字 / 假名 / 罗马字 / 身份
       ctx.font = this.font;
       ctx.fillStyle = bright;
       ctx.textAlign = 'left';
@@ -688,8 +712,6 @@ CRT.Stage.prototype = {
       var setY = ml.nameY + 94;
       this._drawUnits(ctx, setUnits, ml.lx, setY, setHover ? bright : text);
       this._settingsEntryRect = { x: ml.lx, y: setY, w: this._unitsWidth(ctx, setUnits), h: 22 };
-      // 底部提示（左栏最下方）
-      this._drawUnits(ctx, parseRuby('余白《よはく》を押すと待機《たいき》に戻る'), ml.lx, this.H - 52, text);
     } else {
       // 窄版：名字在头像右侧，身份一行（紧凑小字）
       ctx.font = this.font;
@@ -706,9 +728,33 @@ CRT.Stage.prototype = {
         : [{ t: '> ' }, { t: '設定', r: 'せってい' }];
       this._drawUnits(ctx, setUnitsN, av.x + av.s + 10, 136, setHoverN ? bright : text);
       this._settingsEntryRect = { x: av.x + av.s + 10, y: 136, w: this._unitsWidth(ctx, setUnitsN), h: 22 };
-      // 窄版底部提示（短文案）
-      this._drawUnits(ctx, parseRuby('余白《よはく》を押すと待機《たいき》に戻る'), this.MX, this.H - 52, text);
     }
+  },
+
+  /* ---------- 主菜单（宽版：左侧用户栏 + 右侧示波器/菜单） ---------- */
+  _drawMenu: function (ctx, ms) {
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(0, 0, this.W, this.H);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+    var dim = this.color('dim');
+    var text = this.color('text');
+    var bright = this.color('bright');
+
+    // ---- 顶部状态行 ----
+    this._drawUnits(ctx, parseRuby('KX-15 :: 機能一覧《きのういちらん》'), this.MX, 46, text);
+
+    // ---- 布局（宽/窄自适应，缓存） ----
+    var wide = this.W >= LAYOUT.wideMin;
+    if (!this._ml || this._ml.wide !== wide) this._ml = this._layoutMenu();
+    var ml = this._ml;
+
+    // ================= 左栏：用户信息（与「世界」页共用） =================
+    this._drawUserPanel(ctx, ml, ms);
+    // 底部提示（左栏最下方）与右下角时钟
+    this._drawUnits(ctx, parseRuby('余白《よはく》を押すと待機《たいき》に戻る'), this.MX, this.H - 52, text);
+    this._drawClockBR(ctx);
 
     // ================= 右侧：背景图（原波形图位置，四边羽化自然融入） =================
     // 图片素材左缘与菜单 『>』 列对齐
@@ -747,6 +793,204 @@ CRT.Stage.prototype = {
       this._drawUnits(ctx, parseRuby(this._notice.text), ml.mx, ml.my + MENU_ITEMS.length * ml.rowH + 10, text);
     }
     ctx.globalAlpha = 1;
+  },
+
+  /* ============================================================
+   * 世界页：树视图
+   * ============================================================ */
+  scrollBy: function (dy) {
+    this._worldScroll = (this._worldScroll || 0) + dy;
+  },
+  setWorldScroll: function (v) {
+    this._worldScroll = v;
+  },
+
+  /* 把树展开状态铺平成可见行列表（节点行 + 详情行；无连线符号，层级靠缩进） */
+  _worldFlatten: function () {
+    var rows = [];
+    var walk = function (node, depth) {
+      rows.push({ type: 'node', node: node, depth: depth });
+      if (node.open && node.lines && node.lines.length) {
+        for (var li = 0; li < node.lines.length; li++) {
+          rows.push({ type: 'text', text: node.lines[li], depth: depth + 1 });
+        }
+      }
+      if (node.open && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          walk(node.children[i], depth + 1);
+        }
+      }
+    };
+    walk(WORLD_DATA, 0);
+    return rows;
+  },
+
+  /* 按宽度折行（16px 树字体：半角约 8px / 全角 16px 估算） */
+  _wrapTreeText: function (s, maxW) {
+    var lines = [];
+    var cur = '';
+    var w = 0;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s.charAt(i);
+      var cw = ch.charCodeAt(0) < 0x2E80 ? 8 : 16;
+      if (w + cw > maxW && cur.length > 0) {
+        lines.push(cur);
+        cur = '';
+        w = 0;
+      }
+      cur += ch;
+      w += cw;
+    }
+    if (cur.length) lines.push(cur);
+    if (!lines.length) lines.push('');
+    return lines;
+  },
+
+  /* 构建树的行布局（节点行固定高、详情行按折行可变高） */
+  _worldBuildLayout: function (tw) {
+    var rows = this._worldRowsCache;
+    var items = [];
+    var y = 0;
+    var ROWH = 23;
+    var LINEH = 19;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row.type === 'node') {
+        items.push({ row: row, rowIndex: i, y: y, h: ROWH, lines: null, indent: row.depth * 20 });
+        y += ROWH;
+      } else {
+        var indent = row.depth * 20 + 10;
+        var maxW = Math.max(60, tw - indent - 8);
+        var lines = this._wrapTreeText(row.text, maxW);
+        var h = lines.length * LINEH + 3;
+        items.push({ row: row, rowIndex: i, y: y, h: h, lines: lines, indent: indent });
+        y += h;
+      }
+    }
+    return { w: tw, items: items, total: y, rowsStamp: rows };
+  },
+
+  /* 树行命中（渲染时缓存几何；返回对应 rows 索引） */
+  _hitWorldRow: function (x, y) {
+    var g = this._worldGeom;
+    var layout = this._worldLayout;
+    if (!g || !layout) return -1;
+    if (x < g.tx - 12 || x > g.tx + g.tw + 12) return -1;
+    if (y < g.ty || y > g.ty + g.th) return -1;
+    var ly = y - g.ty + this._worldScroll;
+    var items = layout.items;
+    for (var i = 0; i < items.length; i++) {
+      if (ly >= items[i].y && ly < items[i].y + items[i].h) return items[i].rowIndex;
+    }
+    return -1;
+  },
+
+  _drawWorld: function (ctx, ms) {
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(0, 0, this.W, this.H);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+    var dim = this.color('dim');
+    var text = this.color('text');
+    var bright = this.color('bright');
+
+    // 顶部状态行
+    this._drawUnits(ctx, parseRuby('KX-15 :: 世界《せかい》'), this.MX, 46, text);
+
+    // 布局与左栏（与菜单共用）
+    var wide = this.W >= LAYOUT.wideMin;
+    if (!this._ml || this._ml.wide !== wide) this._ml = this._layoutMenu();
+    var ml = this._ml;
+    this._drawUserPanel(ctx, ml, ms);
+
+    // 树视图区几何
+    var tx = ml.wide ? ml.sx : this.MX;
+    var tw = ml.wide ? ml.sw : (this.W - this.MX * 2);
+    var ty = 84;
+    var th = this.H - 84 - 64;
+    var rowH = 23;
+    this._worldGeom = { tx: tx, ty: ty, tw: tw, th: th, rowH: rowH };
+
+    if (!this._worldRowsCache) {
+      this._worldRowsCache = this._worldFlatten();
+      this._worldLayout = null;
+    }
+    if (!this._worldLayout || this._worldLayout.w !== tw || this._worldLayout.rowsStamp !== this._worldRowsCache) {
+      this._worldLayout = this._worldBuildLayout(tw);
+    }
+    var layout = this._worldLayout;
+    var total = layout.total;
+    var maxScroll = Math.max(0, total - th);
+    if (this._worldScroll > maxScroll) this._worldScroll = maxScroll;
+    if (this._worldScroll < 0) this._worldScroll = 0;
+    var scroll = this._worldScroll;
+
+    // 树字体临时切紧凑（不影响其它页面）
+    var oldFont = this.font, oldRuby = this.fontRuby, oldGap = this._rubyGap;
+    this.font = '16px Consolas, "MS Gothic", "Yu Gothic", monospace';
+    this.fontRuby = '8px "MS Gothic", "Yu Gothic", monospace';
+    this._rubyGap = 8;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(tx - 6, ty - 16, tw + 12, th + 16);   // 上边多留 16px，保证第一行的注音完整
+    ctx.clip();
+
+    var hoverIdx = this._hitWorldRow(this._px, this._py);
+    for (var i = 0; i < layout.items.length; i++) {
+      var item = layout.items[i];
+      var y = ty - scroll + item.y;
+      if (y + item.h < ty + 1 || y > ty + th) continue;
+
+      if (item.row.type === 'text') {
+        // 详情行（缩进、暗色、已按宽度折行）
+        ctx.font = this.font;
+        ctx.fillStyle = dim;
+        ctx.globalAlpha = 0.95;
+        for (var li = 0; li < item.lines.length; li++) {
+          ctx.fillText(item.lines[li], tx + item.indent, y + li * 19 + 2);
+        }
+        continue;
+      }
+
+      var node = item.row.node;
+      var hasKids = (node.children && node.children.length) || (node.lines && node.lines.length);
+      var isHover = item.rowIndex === hoverIdx;
+      var px = tx + item.indent;
+      // 展开箭头
+      ctx.font = this.font;
+      var arrow = hasKids ? (node.open ? '▼' : '▶') : '　';
+      ctx.fillStyle = isHover ? bright : dim;
+      ctx.globalAlpha = 1;
+      ctx.fillText(arrow, px, y + 1);
+      px += ctx.measureText('▼').width + 3;
+      // 节点名（含注音）；鼠标选中时用 『』框选
+      var units = isHover
+        ? [{ t: '『' }, { t: node.label, r: node.ruby || null }, { t: '』' }]
+        : [{ t: node.label, r: node.ruby || null }];
+      this._drawUnits(ctx, units, px, y + 1, isHover ? bright : text);
+    }
+    ctx.restore();
+
+    // 恢复字体
+    this.font = oldFont;
+    this.fontRuby = oldRuby;
+    this._rubyGap = oldGap;
+
+    // 滚动条（内容超出一屏时显示）
+    if (maxScroll > 0) {
+      var sbH = Math.max(18, th * (th / total));
+      var sbY = ty + (th - sbH) * (scroll / maxScroll);
+      ctx.fillStyle = dim;
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(tx + tw + 8, sbY, 3, sbH);
+      ctx.globalAlpha = 1;
+    }
+
+    // 底部提示 + 右下角时钟
+    this._drawUnits(ctx, parseRuby('余白《よはく》を押すと戻る'), this.MX, this.H - 52, text);
+    this._drawClockBR(ctx);
   },
 
   /* ---------- 菜单背景图：四边羽化自然融入 ---------- */
@@ -869,13 +1113,8 @@ CRT.Stage.prototype = {
     var text = this.color('text');
     var bright = this.color('bright');
 
-    // 标题与时钟
+    // 标题
     this._drawUnits(ctx, parseRuby('KX-15 :: 設定《せってい》'), this.MX, 46, text);
-    var d = new Date();
-    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
-    var clock = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-    var cw = this._unitsWidth(ctx, [{ t: clock }]);
-    this._drawUnits(ctx, [{ t: clock }], this.W - this.MX - cw, 46, text);
 
     // 布局
     var wide = this.W >= LAYOUT.wideMin;
@@ -920,8 +1159,9 @@ CRT.Stage.prototype = {
       }
     }
 
-    // 底部提示
+    // 底部提示 + 右下角时钟
     this._drawUnits(ctx, parseRuby('余白《よはく》を押すと戻る'), this.MX, this.H - 52, text);
+    this._drawClockBR(ctx);
     ctx.globalAlpha = 1;
   },
 
@@ -1222,13 +1462,8 @@ CRT.Stage.prototype = {
     // 左上角状态小字（亮度统一到冷启动文字标准：正文=text 色满亮）
     this._drawUnits(ctx, parseRuby('KX-15 :: 待機中《たいきちゅう》'), this.MX, 46, this.color('text'));
 
-    // 右下角真实时钟
-    var d = new Date();
-    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
-    var clock = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-    var clockUnits = [{ t: clock }];
-    var cw = this._unitsWidth(ctx, clockUnits);
-    this._drawUnits(ctx, clockUnits, this.W - this.MX - cw, this.H - 52, this.color('text'));
+    // 右下角时钟
+    this._drawClockBR(ctx);
 
     // 底部提示
     this._drawUnits(ctx, parseRuby('画面《がめん》を押してください'), this.MX, this.H - 52, this.color('text'));

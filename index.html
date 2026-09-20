@@ -36,6 +36,7 @@
 <script src="crt.js"></script>
 <script src="sound.js"></script>
 <script src="assets/bg-data.js"></script>
+<script src="world-data.js"></script>
 <script src="stage.js"></script>
 <script>
   // 引擎与内容层对接
@@ -70,20 +71,40 @@
     cv.addEventListener('mouseleave', function () {
       stage.pointer(-1, -1);
     });
-    // 触摸：按下/滑动时同步指针位置（让 『』框选 与按钮高亮在手机上也能看到）
+    // 触摸：轻按同步指针；纵向滑动 = 世界页树视图滚动
+    let tStartY = 0, tScroll0 = 0, tRolled = false;
     cv.addEventListener('touchstart', function (ev) {
       if (ev.touches.length) {
-        const p = toContent(ev.touches[0]);
+        const t = ev.touches[0];
+        tStartY = t.clientY;
+        tScroll0 = stage._worldScroll || 0;
+        tRolled = false;
+        const p = toContent(t);
         stage.pointer(p[0], p[1]);
       }
     }, { passive: true });
     cv.addEventListener('touchmove', function (ev) {
-      if (ev.touches.length) {
-        const p = toContent(ev.touches[0]);
+      if (!ev.touches.length) return;
+      const t = ev.touches[0];
+      const dy = t.clientY - tStartY;
+      if (Math.abs(dy) > 12) {
+        tRolled = true;   // 进入滚动模式
+        const r = cv.getBoundingClientRect();
+        const k = engine.contentHeight / r.height;
+        if (stage.phase === 'world') stage.setWorldScroll(tScroll0 - dy * k);
+      } else {
+        const p = toContent(t);
         stage.pointer(p[0], p[1]);
       }
     }, { passive: true });
+    // 滚轮：世界页树视图滚动
+    cv.addEventListener('wheel', function (ev) {
+      if (stage.phase !== 'world') return;
+      ev.preventDefault();
+      stage.scrollBy(ev.deltaY * 0.6);
+    }, { passive: false });
     cv.addEventListener('click', function (ev) {
+      if (tRolled) { tRolled = false; return; }   // 滑动后不当作点击
       const p = toContent(ev);
       const act = stage.tap(p[0], p[1]);
       sound.ui(act);   // enter/back/notice/reboot 各配一种声音
