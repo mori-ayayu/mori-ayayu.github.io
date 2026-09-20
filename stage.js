@@ -202,9 +202,13 @@ var RAIN_CHARS =
   'アイウエオカキクケコサシスセソタチツテトナニヌネノ' +
   'ハヒフヘホマミムメモヤユヨラリルレロワヲン';
 
+/* ---------- 树节点箭头 ---------- */
+var TREE_ARROW_MS = 150;   // 箭头翻转过渡时长（'›' 向右 → 旋转 90° 向下的动画）
+
 /* ---------- 菜单界面布局常量（内容坐标） ---------- */
 var LAYOUT = {
-  wideMin: 520,     // 画布宽度 >= 此值用宽版布局（左侧用户栏 + 右侧内容区）
+  wideMin: 520,     // 画布宽度 >= 此值用宽版内容布局
+  triMin: 940,      // 画布宽度 >= 此值用三栏常驻布局（左信息 / 中内容 / 右待定）
   lx: 40,           // 左栏 x
   avatar: { x: 40, y: 76, s: 64 },
   scope: { y: 76, h: 216 }     // 右侧内容区（背景图）：x 由左栏右缘推出
@@ -243,10 +247,22 @@ CRT.Stage = function (opts) {
   this._rainRows = 0;
   this._rainLast = 0;
 
-  this._settingsBtns = [];     // 设置界面按钮矩形（渲染时更新）
-  this._settingsEntryRect = null;  // 菜单里「設定」入口的点击区域
+  this._settingsBtns = [];     // 设置控件按钮矩形（渲染时更新）
+  this._settingsRows = [];     // 设置项行矩形（树式展开用）
+  this._settingsEnums = [];    // 枚举子选项矩形
+  this._leftBtnRect = null;    // 左面板 [≡] 按钮矩形
+  this._rightBtnRect = null;   // 右面板 [≡] 按钮矩形
+  this._settingsToggleRect = null;  // 「設定」树节点矩形
+  this._rightPanelOpen = false;  // 浮动模式右侧面板浮层（默认折叠）
   this._worldScroll = 0;       // 世界页树视图滚动偏移（像素）
   this._worldRowsCache = null; // 世界页可见行缓存（展开/折叠后重建）
+  this._skipPrompt = false;    // 冷启动跳过确认弹窗
+  this._rainNext = 'menu';     // 字符雨结束后的目标页面
+  this._userPanelOpen = false; // 浮动模式下用户面板是否展开（默认折叠）
+  this._leftCollapsed = false; // 三栏模式：左面板收起状态
+  this._rightCollapsed = false;// 三栏模式：右面板收起状态
+  this._settingsOpen = false;  // 面板内「設定」树的展开状态
+  this._settingsOpenIdx = -1;  // 设定树内当前展开的项（手风琴，-1 为全收）
 
   // 菜单背景图：外部高清图（先做 canvas 污染探测，干净才用）+ 内嵌 data URL 兜底
   // 说明：file:// 直接打开时，本地图片会被浏览器视为跨源，若直接画进 canvas 会让它"变脏"，
@@ -287,7 +303,7 @@ CRT.Stage = function (opts) {
   this.fontSm = '13px Consolas, "Courier New", "MS Gothic", "Yu Gothic", monospace';
   this.fontLg = '26px "MS Gothic", "Yu Gothic", "SimHei", sans-serif';
   this.fontRuby = '9px "MS Gothic", "Yu Gothic", monospace';   // 振假名（注音）
-  this._rubyGap = 9;   // 注音基线相对主字顶部的上探距离
+  this._rubyGap = 12;  // 注音基线相对主字顶部的上探距离（与主字分开一点）
 
   this.MX = 40;                // 文本左边距（overscan 裁切区外，内容安全区）
   this.TOP = 40;               // （保留）安全区上边距
@@ -451,6 +467,42 @@ CRT.Stage.prototype = {
     ctx.font = this.font;
   },
 
+  /* 树节点箭头角度：0=向右（收起）/ 90=向下（展开），状态变化时平滑翻转、
+     中途切换从当前角度接续，不跳变。首次出现直接到位。 */
+  _treeArrowAngle: function (holder, key, open, ms) {
+    var ar = holder[key];
+    if (!ar) ar = holder[key] = { o: open, from: open ? 90 : 0, t0: -1e9 };
+    if (ar.o !== open) {
+      var p = (ms - ar.t0) / TREE_ARROW_MS;
+      if (p < 0) p = 0; if (p > 1) p = 1;
+      p = p * (2 - p);                       // easeOutQuad：当前所处角度
+      ar.from = ar.o ? 90 * p : 90 * (1 - p);
+      ar.o = open;
+      ar.t0 = ms;
+    }
+    var t = (ms - ar.t0) / TREE_ARROW_MS;
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    t = t * (2 - t);
+    var to = open ? 90 : 0;
+    return ar.from + (to - ar.from) * t;
+  },
+
+  /* 绘制树节点箭头：'›' 字符绕自身中心旋转（deg 度）。x 为原字符绘制点，
+     16px 字符框内居中，旋转前后位置一致。 */
+  _drawTreeArrow: function (ctx, x, y, deg, color) {
+    var ch = '›';
+    var w = ctx.measureText(ch).width;
+    ctx.save();
+    ctx.translate(x + 8, y + 8);
+    if (deg) ctx.rotate(deg * Math.PI / 180);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(ch, -w / 2, -8);
+    ctx.restore();
+  },
+
   /* 右下角时钟（所有页面统一，与待机页一致） */
   _drawClockBR: function (ctx) {
     var d = new Date();
@@ -512,8 +564,8 @@ CRT.Stage.prototype = {
         this.phase = 'standby';
       }
     } else if (this.phase === 'rain') {
-      // 字符雨播完进入主菜单
-      if (ms - this._rainAt >= RAIN_DUR_MS) this.phase = 'menu';
+      // 字符雨播完进入目标页面（菜单 / 待机）
+      if (ms - this._rainAt >= RAIN_DUR_MS) this.phase = this._rainNext || 'menu';
     }
 
     /* ---- 绘制 ---- */
@@ -526,8 +578,17 @@ CRT.Stage.prototype = {
       case 'standby': this._drawStandby(ctx, ms); break;
       case 'rain':    this._drawRain(ctx, ms); break;
       case 'menu':    this._drawMenu(ctx, ms); break;
-      case 'settings': this._drawSettings(ctx, ms); break;
       case 'world':    this._drawWorld(ctx, ms); break;
+    }
+
+    /* ---- 跳过确认弹窗（覆盖在冷启动画面上） ---- */
+    if (this._skipPrompt) {
+      if (this.phase === 'boot' || this.phase === 'grid' || this.phase === 'text' ||
+          this.phase === 'hold' || this.phase === 'fade') {
+        this._drawSkipPrompt(ctx);
+      } else {
+        this._skipPrompt = false;   // 动画已自然结束，弹窗自动消失
+      }
     }
   },
 
@@ -543,6 +604,39 @@ CRT.Stage.prototype = {
   /* 返回动作名供外部播音效：enter / back / notice / reboot */
   tap: function (x, y) {
     y = y - (this._yOff || 0);
+    // 跳过确认弹窗优先响应：确认 → 字符雨 → 待机；其余点击取消
+    if (this._skipPrompt) {
+      var yes = this._skipYesRect;
+      if (yes && x >= yes.x && x <= yes.x + yes.w && y >= yes.y && y <= yes.y + yes.h) {
+        this._skipPrompt = false;
+        this._startRain('standby');
+        this.phase = 'rain';
+        return 'enter';
+      }
+      this._skipPrompt = false;
+      return 'back';
+    }
+    // 左面板按钮：三栏控制左面板收合；浮动模式控制浮层
+    if (this._hitLeftBtn(x, y)) {
+      if (this._ml && this._ml.tri) {
+        this._leftCollapsed = !this._leftCollapsed;
+      } else {
+        this._userPanelOpen = !this._userPanelOpen;
+      }
+      return 'tick';
+    }
+    // 右面板按钮：三栏控制右面板收合；浮动模式控制右浮层
+    if (this._hitRightBtn(x, y)) {
+      if (this._ml && this._ml.tri) {
+        this._rightCollapsed = !this._rightCollapsed;
+      } else {
+        this._rightPanelOpen = !this._rightPanelOpen;
+      }
+      return 'tick';
+    }
+    // 面板内「設定」树与设置项（任意页面通用）
+    var sAct = this._hitSettingsZone(x, y);
+    if (sAct) return sAct;
     switch (this.phase) {
       case 'standby':
         // 字符雨过渡后进入主菜单
@@ -552,10 +646,10 @@ CRT.Stage.prototype = {
       case 'rain':
         return 'enter';   // 过渡进行中，不打断
       case 'menu': {
-        // 左侧「設定」入口
-        if (this._hitSettingsBtn(x, y)) {
-          this.phase = 'settings';
-          return 'enter';
+        // 返回按钮：回待机
+        if (this._hitRect(this._backBtnRect, x, y)) {
+          this.phase = 'standby';
+          return 'back';
         }
         var idx = this._hitItem(x, y);
         if (idx >= 0) {
@@ -575,22 +669,7 @@ CRT.Stage.prototype = {
           };
           return 'notice';
         }
-        this.phase = 'standby';
-        return 'back';
-      }
-      case 'settings': {
-        // 命中 ＋/－ 按钮：调节对应设置项
-        for (var sbi = 0; sbi < this._settingsBtns.length; sbi++) {
-          var b = this._settingsBtns[sbi];
-          if (x >= b.rect.x && x <= b.rect.x + b.rect.w &&
-              y >= b.rect.y && y <= b.rect.y + b.rect.h) {
-            this._adjustSetting(b.idx, b.dir);
-            return 'tick';
-          }
-        }
-        // 点空白：返回菜单
-        this.phase = 'menu';
-        return 'back';
+        return null;   // 空白处：无动作
       }
       case 'world': {
         // 树行：展开 / 折叠（详情行与叶子节点仅轻响）
@@ -608,19 +687,18 @@ CRT.Stage.prototype = {
           }
           return 'tick';
         }
-        // 左侧「設定」入口
-        if (this._hitSettingsBtn(x, y)) {
-          this.phase = 'settings';
-          return 'enter';
+        // 「設定」入口已移入用户面板（见 _hitSettingsZone）
+        // 返回按钮：回菜单
+        if (this._hitRect(this._backBtnRect, x, y)) {
+          this.phase = 'menu';
+          return 'back';
         }
-        // 点空白：返回菜单
-        this.phase = 'menu';
-        return 'back';
+        return null;
       }
       default:
-        // 冷启动流程进行中：点击 = 重新冷启动
-        this.restart();
-        return 'reboot';
+        // 冷启动流程进行中：弹出跳过确认弹窗
+        this._skipPrompt = true;
+        return 'notice';
     }
   },
 
@@ -641,33 +719,54 @@ CRT.Stage.prototype = {
     return -1;
   },
 
-  /* 菜单布局：宽版（左侧用户栏 + 右侧示波器/菜单）与窄版自适应 */
+  /* 菜单布局：三栏常驻 / 宽版 / 窄版自适应 */
   _layoutMenu: function () {
     var wide = this.W >= LAYOUT.wideMin;
+    var tri = this.W >= LAYOUT.triMin;
+    if (tri) {
+      // 三栏布局：左右面板各占一侧；**中间内容位置恒定**，不随面板收合移动
+      var tSx = 288;                          // 内容区左缘（左面板区 260 + 间隔）
+      var tRight = this.W - 214;              // 内容区右缘（右面板区左缘 - 间隔）
+      var tSw = Math.max(240, tRight - tSx);
+      return {
+        wide: true, tri: true,
+        lx: LAYOUT.lx,
+        avatar: LAYOUT.avatar,
+        nameY: LAYOUT.avatar.y + LAYOUT.avatar.s + 12,
+        sx: tSx, sy: LAYOUT.scope.y, sw: tSw, sh: LAYOUT.scope.h,
+        contentRight: tRight,
+        mx: tSx + 12,
+        my: LAYOUT.scope.y + LAYOUT.scope.h + 20,
+        rowH: 25,
+        enX: tSx + 12 + 132
+      };
+    }
     if (wide) {
       var lx = LAYOUT.lx;
-      var sx = lx + 178 + 24;              // 示波器 x
-      var sw = this.W - sx - this.MX;      // 示波器宽
+      var sx = lx + 178 + 24;              // 内容区 x
+      var sw = this.W - sx - this.MX;      // 内容区宽
       return {
-        wide: true,
+        wide: true, tri: false,
         lx: lx,
         avatar: LAYOUT.avatar,
         nameY: LAYOUT.avatar.y + LAYOUT.avatar.s + 12,
         sx: sx, sy: LAYOUT.scope.y, sw: sw, sh: LAYOUT.scope.h,
-        mx: sx + 12,                       // 菜单列表 x（示波器下方，同左缘）
+        contentRight: this.W - this.MX,
+        mx: sx + 12,
         my: LAYOUT.scope.y + LAYOUT.scope.h + 20,
         rowH: 25,
-        enX: sx + 12 + 132                 // 菜单英文装饰列（下位装饰）
+        enX: sx + 12 + 132
       };
     }
-    // 窄版：头像缩小靠左，示波器居中，菜单紧凑纵排
+    // 窄版：紧凑纵排
     return {
-      wide: false,
+      wide: false, tri: false,
       lx: LAYOUT.lx,
       avatar: { x: LAYOUT.lx, y: 76, s: 44 },
       nameY: 80,
       sx: LAYOUT.lx, sy: 158,
       sw: this.W - LAYOUT.lx * 2, sh: 118,
+      contentRight: this.W - this.MX,
       mx: LAYOUT.lx,
       my: 292,
       rowH: 24,
@@ -675,60 +774,262 @@ CRT.Stage.prototype = {
     };
   },
 
-  /* ---------- 左栏用户面板（菜单 / 世界页共用）：头像框（内嵌李萨如）+ 用户信息 + 設定入口 ---------- */
-  _drawUserPanel: function (ctx, ml, ms) {
+  /* ---------- 用户面板与右侧待定面板（三栏左右独立控制 / 浮动折叠） ---------- */
+  _drawUserOverlay: function (ctx, ms) {
+    var dim = this.color('dim');
+    var text = this.color('text');
+    var bright = this.color('bright');
+    var tri = this._ml && this._ml.tri;
+    ctx.globalAlpha = 1;
+
+    // 本帧命中数据重置
+    this._leftBtnRect = null;
+    this._rightBtnRect = null;
+    this._settingsToggleRect = null;
+    this._settingsRows = [];
+    this._settingsEnums = [];
+    this._settingsBtns = [];
+
+    if (tri) {
+      // ===== 三栏模式：左右面板各占一侧（中间内容固定不动） =====
+      // 左上角按钮（控制左面板）
+      this._drawPanelToggle(ctx, this.MX, 68, this._leftCollapsed, -1);
+      if (!this._leftCollapsed) {
+        this._drawUserPanelBox(ctx, ms, this.MX, 102, 220);
+      }
+      // 右上角按钮（与左按钮对称，控制右面板）
+      ctx.font = this.font;
+      var rbw = ctx.measureText('[×]').width;
+      this._drawPanelToggle(ctx, this.W - this.MX - rbw, 68, this._rightCollapsed, 1);
+      // 右侧「未定」面板
+      if (!this._rightCollapsed) {
+        var rw = 150, rh = 80;
+        var rx = this.W - this.MX - rw;
+        ctx.fillStyle = this.color('bg');
+        ctx.fillRect(rx, 102, rw, rh);
+        this._drawUnits(ctx, parseRuby('『未定《みてい》』'), rx + rw / 2, 130, bright, 'center');
+      }
+      return;
+    }
+
+    // ===== 浮动折叠模式：左右按钮各控一个浮层（默认均折叠） =====
+    this._drawPanelToggle(ctx, this.MX, 68, !this._userPanelOpen, -1);
+    ctx.font = this.font;
+    var rbw = ctx.measureText('[×]').width;
+    this._drawPanelToggle(ctx, this.W - this.MX - rbw, 68, !this._rightPanelOpen, 1);
+    // 右浮层先画（左面板打开时叠在它上层）
+    if (this._rightPanelOpen) {
+      var rw = 150, rh = 80;
+      var rx = this.W - this.MX - rw;
+      ctx.fillStyle = this.color('bg');
+      ctx.fillRect(rx, 102, rw, rh);
+      this._drawUnits(ctx, parseRuby('『未定《みてい》』'), rx + rw / 2, 130, bright, 'center');
+    }
+    if (!this._userPanelOpen) return;
+    this._drawUserPanelBox(ctx, ms, this.MX, 102, 220);
+  },
+
+  /* 面板折叠按钮：[≡] 展开 / [×] 收起（which: -1 左 / 1 右） */
+  _drawPanelToggle: function (ctx, x, y, collapsed, which) {
+    ctx.font = this.font;
+    var btn = collapsed ? '[≡]' : '[×]';
+    var bw = ctx.measureText(btn).width;
+    var r = { x: x - 4, y: y - 4, w: bw + 8, h: 28 };
+    if (which === -1) this._leftBtnRect = r; else this._rightBtnRect = r;
+    var hov = this._hitRect(r, this._px, this._py);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = hov ? this.color('bright') : this.color('text');
+    ctx.fillText(btn, x, y);
+  },
+
+  /* 用户面板内容：头部（原尺寸）+ 「設定」树（就地展开设置项） */
+  _drawUserPanelBox: function (ctx, ms, px, py, pw) {
     var line = this.color('line');
     var dim = this.color('dim');
     var text = this.color('text');
     var bright = this.color('bright');
-    var av = ml.avatar;
+
+    // ---- 面板背景（高度动态：設定树展开时向下延伸） ----
+    var zoneY = py + 134;      // 设置区起点（紧接設定行下方，压缩整体高度避免压到底部按钮）
+    var zoneH = 0;
+    if (this._settingsOpen) {
+      zoneH = SETTINGS_ITEMS.length * 18;
+      if (this._settingsOpenIdx >= 0) {
+        var oit = SETTINGS_ITEMS[this._settingsOpenIdx];
+        zoneH += (oit.type === 'enum') ? 22 : 24;
+      }
+    }
+    var panelBottom = this._settingsOpen ? (zoneY + zoneH + 4) : (py + 148);
     ctx.globalAlpha = 1;
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(px, py, pw, panelBottom - py);
+
+    // ---- 头部（原尺寸）：头像 + 名字/假名/罗马字 + 身份 ----
+    var avS = 52;
+    var avX = px + 14, avY = py + 16;
     ctx.strokeStyle = dim;
     ctx.lineWidth = 1;
-    ctx.strokeRect(av.x + 0.5, av.y + 0.5, av.s, av.s);
-    // 框内：黑底上缓缓旋转的李萨如图形
+    ctx.strokeRect(avX + 0.5, avY + 0.5, avS, avS);
     ctx.fillStyle = this.color('bg');
-    ctx.globalAlpha = 1;
-    ctx.fillRect(av.x + 2, av.y + 2, av.s - 4, av.s - 4);
-    this._drawLissajous(ctx, av.x + av.s / 2, av.y + av.s / 2, Math.max(8, av.s / 2 - 10), ms * 0.001, line, dim, text, bright);
+    ctx.fillRect(avX + 2, avY + 2, avS - 4, avS - 4);
+    this._drawLissajous(ctx, avX + avS / 2, avY + avS / 2, Math.max(8, avS / 2 - 8), ms * 0.001, line, dim, text, bright);
 
-    if (ml.wide) {
-      // 名字 / 假名 / 罗马字 / 身份
+    ctx.font = this.font;
+    ctx.fillStyle = bright;
+    ctx.textAlign = 'left';
+    var tx0 = avX + avS + 14;
+    ctx.fillText(OPERATOR.name, tx0, py + 18);
+    ctx.font = this.fontSm;
+    ctx.fillStyle = text;
+    ctx.fillText(OPERATOR.kana, tx0, py + 44);
+    ctx.fillStyle = dim;
+    ctx.fillText(OPERATOR.romaji, tx0, py + 62);
+    this._drawUnits(ctx, parseRuby('身分《みぶん》 : 管理者《かんりしゃ》'), px + 14, py + 82, text);
+
+    // ---- 「設定」树节点（点击展开 / 折叠） ----
+    var setY = py + 112;
+    var setRect = { x: px + 8, y: setY - 20, w: pw - 16, h: 34 };
+    this._settingsToggleRect = setRect;
+    var setHover = this._hitRect(setRect, this._px, this._py);
+    ctx.font = this.font;
+    ctx.globalAlpha = 1;
+    this._drawTreeArrow(ctx, px + 14, setY, this._treeArrowAngle(this, '_setAr', this._settingsOpen, ms), setHover ? bright : dim);
+    var sNameX = px + 14 + ctx.measureText('▼').width + 6;
+    var sUnits = setHover
+      ? [{ t: '『' }, { t: '設定', r: 'せってい' }, { t: '』' }]
+      : [{ t: '設定', r: 'せってい' }];
+    this._drawUnits(ctx, sUnits, sNameX, setY, setHover ? bright : text);
+
+    // ---- 设置区（就地展开，树式 16px 字体；紧凑行高） ----
+    if (!this._settingsOpen) return;
+    var oldFont = this.font, oldRuby = this.fontRuby, oldGap = this._rubyGap;
+    this.font = '16px Consolas, "MS Gothic", "Yu Gothic", monospace';
+    this.fontRuby = '8px "MS Gothic", "Yu Gothic", monospace';
+    this._rubyGap = 10;
+    var y = zoneY;
+    for (var i = 0; i < SETTINGS_ITEMS.length; i++) {
+      var it = SETTINGS_ITEMS[i];
+      var open = this._settingsOpenIdx === i;
+      var rowRect = { x: px + 14, y: y - 2, w: pw - 24, h: 16 };
+      this._settingsRows.push({ idx: i, rect: rowRect });
+      var rowHover = this._hitRect(rowRect, this._px, this._py);
       ctx.font = this.font;
-      ctx.fillStyle = bright;
-      ctx.textAlign = 'left';
-      ctx.fillText(OPERATOR.name, ml.lx, ml.nameY);
-      ctx.font = this.fontSm;
-      ctx.fillStyle = text;
-      ctx.fillText(OPERATOR.kana, ml.lx, ml.nameY + 26);
-      ctx.fillStyle = dim;
-      ctx.fillText(OPERATOR.romaji, ml.lx, ml.nameY + 42);
-      this._drawUnits(ctx, parseRuby('身分《みぶん》 : 管理者《かんりしゃ》'), ml.lx, ml.nameY + 60, text);
-      // 「設定」入口（身份下方）
-      var setHover = this._hitSettingsBtn(this._px, this._py);
-      var setUnits = setHover
-        ? [{ t: '> 『' }, { t: '設定', r: 'せってい' }, { t: '』' }]
-        : [{ t: '> ' }, { t: '設定', r: 'せってい' }];
-      var setY = ml.nameY + 94;
-      this._drawUnits(ctx, setUnits, ml.lx, setY, setHover ? bright : text);
-      this._settingsEntryRect = { x: ml.lx, y: setY, w: this._unitsWidth(ctx, setUnits), h: 22 };
-    } else {
-      // 窄版：名字在头像右侧，身份一行（紧凑小字）
-      ctx.font = this.font;
-      ctx.fillStyle = bright;
-      ctx.textAlign = 'left';
-      ctx.fillText(OPERATOR.name, av.x + av.s + 10, 78);
-      ctx.font = this.fontSm;
-      ctx.fillStyle = text;
-      ctx.fillText('身分 : 管理者', av.x + av.s + 10, 106);
-      // 窄版「設定」入口
-      var setHoverN = this._hitSettingsBtn(this._px, this._py);
-      var setUnitsN = setHoverN
-        ? [{ t: '> 『' }, { t: '設定', r: 'せってい' }, { t: '』' }]
-        : [{ t: '> ' }, { t: '設定', r: 'せってい' }];
-      this._drawUnits(ctx, setUnitsN, av.x + av.s + 10, 136, setHoverN ? bright : text);
-      this._settingsEntryRect = { x: av.x + av.s + 10, y: 136, w: this._unitsWidth(ctx, setUnitsN), h: 22 };
+      ctx.globalAlpha = 1;
+      if (!this._rowAr) this._rowAr = {};
+      this._drawTreeArrow(ctx, px + 20, y, this._treeArrowAngle(this._rowAr, 'r' + i, open, ms), rowHover ? bright : dim);
+      var nameX = px + 20 + ctx.measureText('▼').width + 4;
+      var nameUnits = rowHover
+        ? [{ t: '『' }, { t: it.label }, { t: '』' }]
+        : [{ t: it.label }];
+      this._drawUnits(ctx, nameUnits, nameX, y, rowHover ? bright : text);
+      y += 18;
+      if (!open) continue;
+      if (it.type === 'enum') {
+        // 三选项横排：●緑  ○琥珀  ○白
+        var ex = px + 40;
+        var cur = it.get(this);
+        for (var v = 0; v < it.values.length; v++) {
+          var sel = cur === v;
+          ctx.font = this.font;
+          ctx.fillStyle = sel ? bright : dim;
+          ctx.globalAlpha = 1;
+          var mark = sel ? '●' : '○';
+          ctx.fillText(mark, ex, y + 1);
+          var labX = ex + ctx.measureText('●').width + 3;
+          var lab = it.labels[v] || { t: '?' };
+          var labW = this._unitsWidth(ctx, [lab]);
+          var vr = { x: ex - 2, y: y - 2, w: ctx.measureText('●').width + labW + 8, h: 20 };
+          var vHover = this._hitRect(vr, this._px, this._py);
+          this._settingsEnums.push({ idx: i, value: v, rect: vr });
+          this._drawUnits(ctx, [lab], labX, y + 1, (sel || vHover) ? bright : text);
+          ex = labX + labW + 12;
+        }
+        y += 22;
+      } else {
+        // 数值控件行：[－] 滑条 [＋]
+        var ctrlY = y + 2;
+        var btnW = 34, gap2 = 8, barW = 60;
+        var minusX = px + 40;
+        var barX = minusX + btnW + gap2;
+        var plusX = barX + barW + gap2;
+        var mRect = { x: minusX - 4, y: ctrlY - 2, w: btnW, h: 20 };
+        var pRect = { x: plusX - 4, y: ctrlY - 2, w: btnW, h: 20 };
+        this._settingsBtns.push({ idx: i, dir: -1, rect: mRect });
+        this._settingsBtns.push({ idx: i, dir: 1, rect: pRect });
+        this._drawSettingBtn(ctx, minusX, ctrlY, '－', this._hitRect(mRect, this._px, this._py));
+        this._drawSettingBtn(ctx, plusX, ctrlY, '＋', this._hitRect(pRect, this._px, this._py));
+        var v2 = it.get(this);
+        var frac = Math.max(0, Math.min(1, (v2 - it.min) / (it.max - it.min)));
+        this._drawSlider(ctx, barX, ctrlY, barW, frac);
+        y += 24;
+      }
     }
+    this.font = oldFont;
+    this.fontRuby = oldRuby;
+    this._rubyGap = oldGap;
+  },
+
+  /* 面板内「設定」树与设置项命中（任意页面通用），命中返回 'tick' */
+  _hitSettingsZone: function (x, y) {
+    // [－] / [＋]
+    for (var i = 0; i < this._settingsBtns.length; i++) {
+      var b = this._settingsBtns[i];
+      if (this._hitRect(b.rect, x, y)) {
+        this._adjustSetting(b.idx, b.dir);
+        return 'tick';
+      }
+    }
+    // 枚举选项
+    for (var j = 0; j < this._settingsEnums.length; j++) {
+      var en = this._settingsEnums[j];
+      if (this._hitRect(en.rect, x, y)) {
+        SETTINGS_ITEMS[en.idx].set(en.value, this);
+        this._saveSettings();
+        return 'tick';
+      }
+    }
+    // 设置项行（手风琴）
+    for (var k = 0; k < this._settingsRows.length; k++) {
+      var r = this._settingsRows[k];
+      if (this._hitRect(r.rect, x, y)) {
+        this._settingsOpenIdx = (this._settingsOpenIdx === r.idx) ? -1 : r.idx;
+        return 'tick';
+      }
+    }
+    // 「設定」节点：展开 / 折叠
+    if (this._hitRect(this._settingsToggleRect, x, y)) {
+      this._settingsOpen = !this._settingsOpen;
+      if (!this._settingsOpen) this._settingsOpenIdx = -1;
+      return 'tick';
+    }
+    return null;
+  },
+
+  _hitLeftBtn: function (x, y) {
+    return this._hitRect(this._leftBtnRect, x, y);
+  },
+
+  _hitRightBtn: function (x, y) {
+    return this._hitRect(this._rightBtnRect, x, y);
+  },
+
+  /* 底部导航按钮（含 hover 高亮），返回点击区域 */
+  _drawNavButton: function (ctx, units, x, y) {
+    var w = this._unitsWidth(ctx, units);
+    var hovered = this._hitRect({ x: x - 6, y: y - 4, w: w + 12, h: 28 }, this._px, this._py);
+    if (hovered) {
+      ctx.fillStyle = this.color('line');
+      ctx.globalAlpha = 0.55;
+      ctx.fillRect(x - 6, y - 4, w + 12, 28);
+      ctx.globalAlpha = 1;
+    }
+    this._drawUnits(ctx, units, x, y, hovered ? this.color('bright') : this.color('text'));
+    return { x: x - 6, y: y - 4, w: w + 12, h: 28 };
+  },
+
+  _hitRect: function (r, x, y) {
+    if (!r) return false;
+    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
   },
 
   /* ---------- 主菜单（宽版：左侧用户栏 + 右侧示波器/菜单） ---------- */
@@ -743,17 +1044,17 @@ CRT.Stage.prototype = {
     var bright = this.color('bright');
 
     // ---- 顶部状态行 ----
-    this._drawUnits(ctx, parseRuby('KX-15 :: 機能一覧《きのういちらん》'), this.MX, 46, text);
+    var titleX = this.MX;
+    this._drawUnits(ctx, parseRuby('KX-15 :: 機能一覧《きのういちらん》'), titleX, 46, text);
 
-    // ---- 布局（宽/窄自适应，缓存） ----
+    // ---- 布局（三栏/宽/窄自适应，缓存） ----
     var wide = this.W >= LAYOUT.wideMin;
-    if (!this._ml || this._ml.wide !== wide) this._ml = this._layoutMenu();
+    var tri = this.W >= LAYOUT.triMin;
+    if (!this._ml || this._ml.wide !== wide || this._ml.tri !== tri) this._ml = this._layoutMenu();
     var ml = this._ml;
 
-    // ================= 左栏：用户信息（与「世界」页共用） =================
-    this._drawUserPanel(ctx, ml, ms);
-    // 底部提示（左栏最下方）与右下角时钟
-    this._drawUnits(ctx, parseRuby('余白《よはく》を押すと待機《たいき》に戻る'), this.MX, this.H - 52, text);
+    // ================= 底部导航按钮与右下角时钟 =================
+    this._backBtnRect = this._drawNavButton(ctx, parseRuby('[待機《たいき》へ戻る]'), this.MX, 424);
     this._drawClockBR(ctx);
 
     // ================= 右侧：背景图（原波形图位置，四边羽化自然融入） =================
@@ -793,6 +1094,9 @@ CRT.Stage.prototype = {
       this._drawUnits(ctx, parseRuby(this._notice.text), ml.mx, ml.my + MENU_ITEMS.length * ml.rowH + 10, text);
     }
     ctx.globalAlpha = 1;
+
+    // ================= 两侧面板层：最后绘制（浮层永远压在页面内容之上） =================
+    this._drawUserOverlay(ctx, ms);
   },
 
   /* ============================================================
@@ -825,25 +1129,63 @@ CRT.Stage.prototype = {
     return rows;
   },
 
-  /* 按宽度折行（16px 树字体：半角约 8px / 全角 16px 估算） */
+  /* 折行（16px 树字体）：先按句读分段，再逐段排行——避免一大段文字堆在一行；
+     单段超宽时再字符级硬折（半角约 8px / 全角 16px 估算） */
   _wrapTreeText: function (s, maxW) {
-    var lines = [];
+    if (!s) return [''];
+    function charW(c) { return c.charCodeAt(0) < 0x2E80 ? 8 : 16; }
+    // 1) 按句读切段（句号、叹号、问号、引号尾）
+    var segs = [];
     var cur = '';
-    var w = 0;
     for (var i = 0; i < s.length; i++) {
       var ch = s.charAt(i);
-      var cw = ch.charCodeAt(0) < 0x2E80 ? 8 : 16;
-      if (w + cw > maxW && cur.length > 0) {
-        lines.push(cur);
-        cur = '';
-        w = 0;
-      }
       cur += ch;
-      w += cw;
+      if ('。！？'.indexOf(ch) >= 0 || ch === '」') {
+        segs.push(cur);
+        cur = '';
+      }
     }
-    if (cur.length) lines.push(cur);
-    if (!lines.length) lines.push('');
-    return lines;
+    if (cur.length) segs.push(cur);
+    // 2) 逐段排行
+    var out = [];
+    var line = '';
+    var w = 0;
+    function flush() { if (line.length) { out.push(line); line = ''; w = 0; } }
+    for (var k = 0; k < segs.length; k++) {
+      var seg = segs[k];
+      var segW = 0;
+      for (var j = 0; j < seg.length; j++) segW += charW(seg.charAt(j));
+      if (w + segW <= maxW) {
+        line += seg;
+        w += segW;
+      } else {
+        flush();
+        if (segW <= maxW) {
+          line = seg;
+          w = segW;
+        } else {
+          for (var m = 0; m < seg.length; m++) {
+            var c2 = seg.charAt(m);
+            var cw2 = charW(c2);
+            if (w + cw2 > maxW && line.length) {
+              // 避头点：标点不允许落在行首，吸到上一行
+              if ('，。、；：？！）」』］｝'.indexOf(c2) >= 0) {
+                line += c2;
+                w += cw2;
+                flush();
+                continue;
+              }
+              flush();
+            }
+            line += c2;
+            w += cw2;
+          }
+        }
+      }
+    }
+    flush();
+    if (!out.length) out.push('');
+    return out;
   },
 
   /* 构建树的行布局（节点行固定高、详情行按折行可变高） */
@@ -896,19 +1238,26 @@ CRT.Stage.prototype = {
     var bright = this.color('bright');
 
     // 顶部状态行
-    this._drawUnits(ctx, parseRuby('KX-15 :: 世界《せかい》'), this.MX, 46, text);
+    var titleX = this.MX;
+    this._drawUnits(ctx, parseRuby('KX-15 :: 世界《せかい》'), titleX, 46, text);
 
-    // 布局与左栏（与菜单共用）
+    // 布局（与菜单共用）
     var wide = this.W >= LAYOUT.wideMin;
-    if (!this._ml || this._ml.wide !== wide) this._ml = this._layoutMenu();
+    var tri = this.W >= LAYOUT.triMin;
+    if (!this._ml || this._ml.wide !== wide || this._ml.tri !== tri) this._ml = this._layoutMenu();
     var ml = this._ml;
-    this._drawUserPanel(ctx, ml, ms);
 
-    // 树视图区几何
+    // 树视图区几何：宽版下内容右界以背景图视觉右缘为分界线（屏幕右边留空）
     var tx = ml.wide ? ml.sx : this.MX;
-    var tw = ml.wide ? ml.sw : (this.W - this.MX * 2);
-    var ty = 84;
-    var th = this.H - 84 - 64;
+    var tw;
+    if (ml.wide) {
+      var bgRight = ml.mx + Math.min((ml.sx + ml.sw) - ml.mx, LAYOUT.scope.h * 16 / 9);
+      tw = Math.max(240, bgRight - tx);
+    } else {
+      tw = this.W - this.MX * 2;
+    }
+    var ty = ml.wide ? 84 : 110;   // 紧凑模式：整体下移，让开左上角按钮与首行注音空间
+    var th = this.H - ty - 64;
     var rowH = 23;
     this._worldGeom = { tx: tx, ty: ty, tw: tw, th: th, rowH: rowH };
 
@@ -930,7 +1279,7 @@ CRT.Stage.prototype = {
     var oldFont = this.font, oldRuby = this.fontRuby, oldGap = this._rubyGap;
     this.font = '16px Consolas, "MS Gothic", "Yu Gothic", monospace';
     this.fontRuby = '8px "MS Gothic", "Yu Gothic", monospace';
-    this._rubyGap = 8;
+    this._rubyGap = 10;
 
     ctx.save();
     ctx.beginPath();
@@ -960,10 +1309,13 @@ CRT.Stage.prototype = {
       var px = tx + item.indent;
       // 展开箭头
       ctx.font = this.font;
-      var arrow = hasKids ? (node.open ? '▼' : '▶') : '　';
-      ctx.fillStyle = isHover ? bright : dim;
       ctx.globalAlpha = 1;
-      ctx.fillText(arrow, px, y + 1);
+      if (hasKids) {
+        this._drawTreeArrow(ctx, px, y + 1, this._treeArrowAngle(node, '_ar', node.open, ms), isHover ? bright : dim);
+      } else {
+        ctx.fillStyle = dim;
+        ctx.fillText('　', px, y + 1);
+      }
       px += ctx.measureText('▼').width + 3;
       // 节点名（含注音）；鼠标选中时用 『』框选
       var units = isHover
@@ -988,9 +1340,10 @@ CRT.Stage.prototype = {
       ctx.globalAlpha = 1;
     }
 
-    // 底部提示 + 右下角时钟
-    this._drawUnits(ctx, parseRuby('余白《よはく》を押すと戻る'), this.MX, this.H - 52, text);
+    // 底部导航按钮 + 右下角时钟 + 用户面板层
+    this._backBtnRect = this._drawNavButton(ctx, parseRuby('[戻《もど》る]'), this.MX, 424);
     this._drawClockBR(ctx);
+    this._drawUserOverlay(ctx, ms);
   },
 
   /* ---------- 菜单背景图：四边羽化自然融入 ---------- */
@@ -1096,74 +1449,8 @@ CRT.Stage.prototype = {
   },
 
   /* ============================================================
-   * 设置界面
+   * 设置辅助（用户面板内「設定」树使用）
    * ============================================================ */
-  _hitSettingsBtn: function (x, y) {
-    var r = this._settingsEntryRect;
-    if (!r) return false;
-    return x >= r.x - 20 && x <= r.x + r.w + 24 && y >= r.y - 4 && y <= r.y + r.h;
-  },
-
-  _drawSettings: function (ctx, ms) {
-    ctx.fillStyle = this.color('bg');
-    ctx.fillRect(0, 0, this.W, this.H);
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
-    ctx.globalAlpha = 1;
-    var text = this.color('text');
-    var bright = this.color('bright');
-
-    // 标题
-    this._drawUnits(ctx, parseRuby('KX-15 :: 設定《せってい》'), this.MX, 46, text);
-
-    // 布局
-    var wide = this.W >= LAYOUT.wideMin;
-    var rowH = wide ? 36 : 30;
-    var nameW = wide ? 160 : 130;
-    var btnW = wide ? 46 : 40;
-    var barW = wide ? 130 : 90;
-    var gap = wide ? 14 : 10;
-    var blockW = nameW + btnW + gap + barW + gap + btnW;
-    var x0 = Math.max(this.MX, Math.round((this.W - blockW) / 2));
-    var y0 = 120;
-    var px = this._px, py = this._py;
-    var inRect = function (r) {
-      return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-    };
-
-    this._settingsBtns = [];
-    for (var i = 0; i < SETTINGS_ITEMS.length; i++) {
-      var it = SETTINGS_ITEMS[i];
-      var y = y0 + i * rowH;
-      // 名称
-      this._drawUnits(ctx, [{ t: it.label, r: it.ruby }], x0, y, text);
-      // 控件位置
-      var minusX = x0 + nameW;
-      var barX = x0 + nameW + btnW + gap;
-      var plusX = barX + barW + gap;
-      var mRect = { x: minusX - 4, y: y - 3, w: btnW, h: 26 };
-      var pRect = { x: plusX - 4, y: y - 3, w: btnW, h: 26 };
-      this._settingsBtns.push({ idx: i, dir: -1, rect: mRect });
-      this._settingsBtns.push({ idx: i, dir: 1, rect: pRect });
-      // [－] [＋]
-      this._drawSettingBtn(ctx, minusX, y, '－', inRect(mRect));
-      this._drawSettingBtn(ctx, plusX, y, '＋', inRect(pRect));
-      // 中间：滑条或枚举文本
-      if (it.type === 'enum') {
-        var lab = it.labels[it.get(this)] || { t: '?' };
-        this._drawUnits(ctx, [lab], barX + barW / 2, y, bright, 'center');
-      } else {
-        var v = it.get(this);
-        var frac = Math.max(0, Math.min(1, (v - it.min) / (it.max - it.min)));
-        this._drawSlider(ctx, barX, y, barW, frac);
-      }
-    }
-
-    // 底部提示 + 右下角时钟
-    this._drawUnits(ctx, parseRuby('余白《よはく》を押すと戻る'), this.MX, this.H - 52, text);
-    this._drawClockBR(ctx);
-    ctx.globalAlpha = 1;
-  },
 
   /* 小的 [－]/[＋] 按钮 */
   _drawSettingBtn: function (ctx, x, y, ch, hovered) {
@@ -1251,17 +1538,23 @@ CRT.Stage.prototype = {
     }
   },
 
-  /* ---------- 字符雨（待机 -> 菜单过渡） ---------- */
-  _startRain: function () {
+  /* ---------- 字符雨（待机 -> 菜单 过渡；next 指定雨后的页面） ---------- */
+  _startRain: function (next) {
     this._rainAt = performance.now();
     this._rainLast = this._rainAt;
+    this._rainNext = next || 'menu';
+    var ph = this._ctx ? this._ctx.canvas.height : this.H;
+    this._rainTop = -(this._yOff || 0);   // 设计坐标中画布物理顶端（雨覆盖全画布，含上下暗区）
     var cols = Math.max(20, Math.floor(this.W / 12));
-    var rows = Math.floor(this.H / 14);
+    var rows = Math.max(24, Math.ceil(ph / 14) + 2);
     var list = [];
     for (var i = 0; i < cols; i++) {
+      // 一半列从画布顶端上方落下，一半列预先散布全屏——开场即满屏雨
+      var fromTop = Math.random() < 0.5;
+      var y0 = fromTop ? -(Math.random() * 12) : (Math.random() * rows);
       list.push({
-        y: -(Math.random() * rows * 0.6),
-        ly: -(Math.random() * rows * 0.6),
+        y: y0,
+        ly: y0,
         spd: 3 + Math.random() * 7
       });
     }
@@ -1327,10 +1620,56 @@ CRT.Stage.prototype = {
         var step = k / (RAIN_TRAIL + 1);
         ctx.fillStyle = (k === 0) ? bright : text;
         ctx.globalAlpha = Math.max(0, (1 - step)) * Math.max(0, (1 - step)) * 0.95 * fade;
-        ctx.fillText(ch, c * colW + 1, yy * rowH + 1);
+        ctx.fillText(ch, c * colW + 1, this._rainTop + yy * rowH + 1);
       }
     }
     ctx.globalAlpha = 1;
+  },
+
+  /* ---------- 跳过确认弹窗（冷启动中点击时出现） ---------- */
+  _drawSkipPrompt: function (ctx) {
+    var pw = 380;
+    var phgt = 138;
+    var px = Math.round((this.W - pw) / 2);
+    var py = Math.round((this.H - phgt) / 2) - 8;
+    // 面板底与边框
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(px, py, pw, phgt);
+    ctx.strokeStyle = this.color('dim');
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px + 1, py + 1, pw - 2, phgt - 2);
+    // 文字
+    this._drawUnits(ctx, parseRuby('冷間起動《れいかんきどう》をスキップしますか？'), px + 26, py + 30, this.color('text'));
+    // 按钮 [はい] / [いいえ]
+    var btnY = py + 82;
+    ctx.font = this.font;
+    var b1 = '[はい]';
+    var b2 = '[いいえ]';
+    var b1w = ctx.measureText(b1).width;
+    var b2w = ctx.measureText(b2).width;
+    var b1x = px + 64;
+    var b2x = px + pw - 64 - b2w;
+    var self = this;
+    function drawBtn(text, bx, bw) {
+      var hov = self._px >= bx - 4 && self._px <= bx + bw + 4 &&
+                self._py >= btnY - 4 && self._py <= btnY + 26;
+      if (hov) {
+        ctx.fillStyle = self.color('line');
+        ctx.globalAlpha = 0.55;
+        ctx.fillRect(bx - 4, btnY - 2, bw + 8, 26);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = self.color('bright');
+      } else {
+        ctx.fillStyle = self.color('text');
+      }
+      ctx.fillText(text, bx, btnY);
+    }
+    drawBtn(b1, b1x, b1w);
+    drawBtn(b2, b2x, b2w);
+    // 记录确认按钮的命中区（其余点击视作取消）
+    this._skipYesRect = { x: b1x - 4, y: btnY - 4, w: b1w + 8, h: 28 };
+    this._skipNoRect = { x: b2x - 4, y: btnY - 4, w: b2w + 8, h: 28 };
   },
 
   /* ---------- 通电：亮线展开 ---------- */
