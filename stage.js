@@ -126,7 +126,8 @@ var OPERATOR = {
 var MENU_ITEMS = [
   { id: 'album',  label: '写真帖', ruby: 'しゃしんちょう', en: 'ALBUM' },
   { id: 'docs',   label: '文書',   ruby: 'ぶんしょ',       en: 'DOCUMENTS' },
-  { id: 'world',  label: '世界',   ruby: 'せかい',         en: 'WORLD' },
+  { id: 'study',  label: '学習',   ruby: 'がくしゅう',     en: 'STUDY' },
+  { id: 'world',  label: '箱庭',   ruby: 'はこにわ',       en: 'DIORAMA' },
   { id: 'reboot', label: '再起動', ruby: 'さいきどう',     en: 'REBOOT' }
 ];
 
@@ -205,6 +206,15 @@ var RAIN_CHARS =
 /* ---------- 树节点箭头 ---------- */
 var TREE_ARROW_MS = 150;   // 箭头翻转过渡时长（'›' 向右 → 旋转 90° 向下的动画）
 
+/* 学習：假名阶段显示标签（与 study-data.js 的 STUDY_KANA 一一对应） */
+var KANA_LABELS = [
+  '一階《いっかい》 清音《せいおん》',
+  '二階《にかい》 濁音《だくおん》・半濁音《はんだくおん》',
+  '三階《さんかい》 片仮名《かたかな》',
+  '四階《よんかい》 拗音《ようおん》',
+  '五階《ごかい》 総合《そうごう》'
+];
+
 /* ---------- 菜单界面布局常量（内容坐标） ---------- */
 var LAYOUT = {
   wideMin: 520,     // 画布宽度 >= 此值用宽版内容布局
@@ -254,6 +264,10 @@ CRT.Stage = function (opts) {
   this._rightBtnRect = null;   // 右面板 [≡] 按钮矩形
   this._settingsToggleRect = null;  // 「設定」树节点矩形
   this._rightPanelOpen = false;  // 浮动模式右侧面板浮层（默认折叠）
+  this._quiz = null;           // 当前答题状态（mode/stage/q/opts/ans/chosen/fbAt/ok/total）
+  this._quizOpts = [];         // 答题页选项命中矩形
+  this._studyItems = [];       // 学习首页选项命中矩形
+  this._kanaItems = [];        // 假名阶段选择命中矩形
   this._worldScroll = 0;       // 世界页树视图滚动偏移（像素）
   this._worldRowsCache = null; // 世界页可见行缓存（展开/折叠后重建）
   this._skipPrompt = false;    // 冷启动跳过确认弹窗
@@ -566,6 +580,9 @@ CRT.Stage.prototype = {
     } else if (this.phase === 'rain') {
       // 字符雨播完进入目标页面（菜单 / 待机）
       if (ms - this._rainAt >= RAIN_DUR_MS) this.phase = this._rainNext || 'menu';
+    } else if (this.phase === 'quiz' && this._quiz && this._quiz.chosen >= 0 &&
+               ms - this._quiz.fbAt >= 1100) {
+      this._nextQuestion();   // 反馈停留后自动出下一题
     }
 
     /* ---- 绘制 ---- */
@@ -579,6 +596,9 @@ CRT.Stage.prototype = {
       case 'rain':    this._drawRain(ctx, ms); break;
       case 'menu':    this._drawMenu(ctx, ms); break;
       case 'world':    this._drawWorld(ctx, ms); break;
+      case 'study':    this._drawStudy(ctx, ms); break;
+      case 'kana':     this._drawKanaSelect(ctx, ms); break;
+      case 'quiz':     this._drawQuiz(ctx, ms); break;
     }
 
     /* ---- 跳过确认弹窗（覆盖在冷启动画面上） ---- */
@@ -616,6 +636,8 @@ CRT.Stage.prototype = {
       this._skipPrompt = false;
       return 'back';
     }
+    // 面板按钮与设置树仅存在于菜单/箱庭页（学习页无面板，避免旧命中数据吞点击）
+    if (this.phase === 'menu' || this.phase === 'world') {
     // 左面板按钮：三栏控制左面板收合；浮动模式控制浮层
     if (this._hitLeftBtn(x, y)) {
       if (this._ml && this._ml.tri) {
@@ -634,9 +656,10 @@ CRT.Stage.prototype = {
       }
       return 'tick';
     }
-    // 面板内「設定」树与设置项（任意页面通用）
+    // 面板内「設定」树与设置项
     var sAct = this._hitSettingsZone(x, y);
     if (sAct) return sAct;
+    }
     switch (this.phase) {
       case 'standby':
         // 字符雨过渡后进入主菜单
@@ -660,6 +683,11 @@ CRT.Stage.prototype = {
           }
           if (it.id === 'world') {
             this.phase = 'world';
+            return 'enter';
+          }
+          if (it.id === 'study') {
+            this.phase = 'study';
+            this._quiz = null;
             return 'enter';
           }
           // 占位项：后续在这里按 id 接入真实内容
@@ -692,6 +720,43 @@ CRT.Stage.prototype = {
         if (this._hitRect(this._backBtnRect, x, y)) {
           this.phase = 'menu';
           return 'back';
+        }
+        return null;
+      }
+      case 'study': {
+        if (this._hitRect(this._backBtnRect, x, y)) {
+          this.phase = 'menu';
+          return 'back';
+        }
+        var sItem = this._hitStudyItem(x, y);
+        if (sItem) {
+          if (sItem.act === 'kana') { this.phase = 'kana'; return 'enter'; }
+          if (sItem.act === 'word') { this._startQuiz('word', 0); return 'enter'; }
+        }
+        return null;
+      }
+      case 'kana': {
+        if (this._hitRect(this._backBtnRect, x, y)) {
+          this.phase = 'study';
+          return 'back';
+        }
+        for (var ki = 0; ki < (this._kanaItems || []).length; ki++) {
+          if (this._hitRect(this._kanaItems[ki].rect, x, y)) {
+            this._startQuiz('kana', this._kanaItems[ki].idx);
+            return 'enter';
+          }
+        }
+        return null;
+      }
+      case 'quiz': {
+        if (this._hitRect(this._backBtnRect, x, y)) {
+          this.phase = (this._quiz && this._quiz.mode === 'kana') ? 'kana' : 'study';
+          return 'back';
+        }
+        for (var qi = 0; qi < (this._quizOpts || []).length; qi++) {
+          if (this._hitRect(this._quizOpts[qi].rect, x, y)) {
+            return this._answerQuiz(this._quizOpts[qi].idx);
+          }
         }
         return null;
       }
@@ -736,8 +801,8 @@ CRT.Stage.prototype = {
         sx: tSx, sy: LAYOUT.scope.y, sw: tSw, sh: LAYOUT.scope.h,
         contentRight: tRight,
         mx: tSx + 12,
-        my: LAYOUT.scope.y + LAYOUT.scope.h + 20,
-        rowH: 25,
+        my: LAYOUT.scope.y + LAYOUT.scope.h + 14,
+        rowH: 23,
         enX: tSx + 12 + 132
       };
     }
@@ -753,8 +818,8 @@ CRT.Stage.prototype = {
         sx: sx, sy: LAYOUT.scope.y, sw: sw, sh: LAYOUT.scope.h,
         contentRight: this.W - this.MX,
         mx: sx + 12,
-        my: LAYOUT.scope.y + LAYOUT.scope.h + 20,
-        rowH: 25,
+        my: LAYOUT.scope.y + LAYOUT.scope.h + 14,
+        rowH: 23,
         enX: sx + 12 + 132
       };
     }
@@ -1089,9 +1154,9 @@ CRT.Stage.prototype = {
       }
     }
 
-    // notice（占位项提示）显示在菜单列表下方
+    // notice（占位项提示）：与底部按钮同一行、放在按钮右侧
     if (this._notice && ms < this._notice.until) {
-      this._drawUnits(ctx, parseRuby(this._notice.text), ml.mx, ml.my + MENU_ITEMS.length * ml.rowH + 10, text);
+      this._drawUnits(ctx, parseRuby(this._notice.text), this.MX + 200, 424, text);
     }
     ctx.globalAlpha = 1;
 
@@ -1239,7 +1304,7 @@ CRT.Stage.prototype = {
 
     // 顶部状态行
     var titleX = this.MX;
-    this._drawUnits(ctx, parseRuby('KX-15 :: 世界《せかい》'), titleX, 46, text);
+    this._drawUnits(ctx, parseRuby('KX-15 :: 箱庭《はこにわ》'), titleX, 46, text);
 
     // 布局（与菜单共用）
     var wide = this.W >= LAYOUT.wideMin;
@@ -1344,6 +1409,273 @@ CRT.Stage.prototype = {
     this._backBtnRect = this._drawNavButton(ctx, parseRuby('[戻《もど》る]'), this.MX, 424);
     this._drawClockBR(ctx);
     this._drawUserOverlay(ctx, ms);
+  },
+
+  /* ============================================================
+   * 学習：入口页 / 假名阶段选择 / 答题（假名・語彙共通）
+   * ============================================================ */
+
+  /* 学习存档（localStorage）：{ kana: [{ok,total}×5], word: {ok,total} } */
+  _studyStore: function () {
+    if (!this._studyStoreCache) {
+      var d = null;
+      try { d = JSON.parse(localStorage.getItem('kx15.study') || 'null'); } catch (e) { d = null; }
+      if (!d || typeof d !== 'object') d = {};
+      if (!d.kana || !d.kana.length) d.kana = [];
+      for (var i = 0; i < STUDY_KANA.length; i++) {
+        if (!d.kana[i]) d.kana[i] = { ok: 0, total: 0 };
+      }
+      if (!d.word) d.word = { ok: 0, total: 0 };
+      this._studyStoreCache = d;
+    }
+    return this._studyStoreCache;
+  },
+  _saveStudy: function () {
+    try { localStorage.setItem('kx15.study', JSON.stringify(this._studyStore())); } catch (e) {}
+  },
+
+  /* 开始答题：mode 'kana' | 'word' */
+  _startQuiz: function (mode, stage) {
+    this._quiz = {
+      mode: mode, stage: stage || 0,
+      q: { main: '', sub: '', ansText: '' },
+      opts: [], ans: -1, chosen: -1, fbAt: 0, ok: 0, total: 0
+    };
+    this._nextQuestion();
+    this.phase = 'quiz';
+  },
+
+  _pickSome: function (arr, n) {
+    var a = arr.slice(), out = [];
+    while (out.length < n && a.length) {
+      out.push(a.splice((Math.random() * a.length) | 0, 1)[0]);
+    }
+    return out;
+  },
+
+  /* 出下一题（干扰项按文字去重；同音假名不重复入选项） */
+  _nextQuestion: function () {
+    var qz = this._quiz;
+    if (!qz) return;
+    var correct, cand = [], pool;
+    if (qz.mode === 'kana') {
+      pool = STUDY_KANA[qz.stage].items;
+      var pick = pool[(Math.random() * pool.length) | 0];
+      qz.q.main = pick[0];
+      qz.q.sub = '';
+      qz.q.ansText = pick[1];
+      correct = pick[1];
+      for (var i = 0; i < pool.length; i++) {
+        var r = pool[i][1];
+        if (r !== correct && cand.indexOf(r) < 0) cand.push(r);
+      }
+    } else {
+      pool = STUDY_WORDS;
+      var pw = pool[(Math.random() * pool.length) | 0];
+      qz.q.main = pw.w;
+      qz.q.sub = pw.r;
+      qz.q.ansText = pw.m;
+      correct = pw.m;
+      for (var j = 0; j < pool.length; j++) {
+        var mm = pool[j].m;
+        if (mm !== correct && cand.indexOf(mm) < 0) cand.push(mm);
+      }
+    }
+    var opts = this._pickSome(cand, 3);
+    opts.push(correct);
+    for (var k = opts.length - 1; k > 0; k--) {
+      var t = (Math.random() * (k + 1)) | 0;
+      var tmp = opts[k]; opts[k] = opts[t]; opts[t] = tmp;
+    }
+    qz.opts = opts;
+    qz.ans = opts.indexOf(correct);
+    qz.chosen = -1;
+    qz.fbAt = 0;
+  },
+
+  /* 作答（已答则忽略）；反馈停留 1.1s 后由 render 自动出下一题 */
+  _answerQuiz: function (i) {
+    var qz = this._quiz;
+    if (!qz || qz.chosen >= 0) return 'tick';
+    qz.chosen = i;
+    qz.fbAt = performance.now();
+    qz.total++;
+    var ok = (i === qz.ans);
+    if (ok) qz.ok++;
+    var store = this._studyStore();
+    var rec = (qz.mode === 'kana') ? store.kana[qz.stage] : store.word;
+    rec.ok += ok ? 1 : 0;
+    rec.total += 1;
+    this._saveStudy();
+    return 'tick';
+  },
+
+  /* ---------- 学習入口：仮名練習 / 語彙記憶 ---------- */
+  _drawStudy: function (ctx, ms) {
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(0, 0, this.W, this.H);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+    var dim = this.color('dim');
+    var text = this.color('text');
+    var bright = this.color('bright');
+
+    this._drawUnits(ctx, parseRuby('KX-15 :: 学習《がくしゅう》'), this.MX, 46, text);
+
+    var items = [
+      { act: 'kana', label: '仮名練習', ruby: 'かなれんしゅう', en: 'KANA' },
+      { act: 'word', label: '語彙記憶', ruby: 'ごいきおく', en: 'VOCABULARY' }
+    ];
+    this._studyItems = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var y = 210 + i * 48;
+      var rect = { x: this.MX - 8, y: y - 6, w: 380, h: 36 };
+      var hv = this._hitRect(rect, this._px, this._py);
+      this._studyItems.push({ act: it.act, rect: rect });
+      var units = hv
+        ? [{ t: '> 『' }, { t: it.label, r: it.ruby }, { t: '』' }]
+        : [{ t: '> ' }, { t: it.label, r: it.ruby }];
+      this._drawUnits(ctx, units, this.MX, y, hv ? bright : text);
+      ctx.font = '12px Consolas, "MS Gothic", monospace';
+      ctx.fillStyle = dim;
+      ctx.globalAlpha = hv ? 0.85 : 0.55;
+      ctx.fillText(it.en, this.MX + 230, y + 7);
+      ctx.globalAlpha = 1;
+    }
+
+    this._backBtnRect = this._drawNavButton(ctx, parseRuby('[戻《もど》る]'), this.MX, 424);
+    this._drawClockBR(ctx);
+  },
+  _hitStudyItem: function (x, y) {
+    for (var i = 0; i < this._studyItems.length; i++) {
+      if (this._hitRect(this._studyItems[i].rect, x, y)) return this._studyItems[i];
+    }
+    return null;
+  },
+
+  /* ---------- 仮名練習：阶段选择 ---------- */
+  _drawKanaSelect: function (ctx, ms) {
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(0, 0, this.W, this.H);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+    var dim = this.color('dim');
+    var text = this.color('text');
+    var bright = this.color('bright');
+    var store = this._studyStore();
+
+    this._drawUnits(ctx, parseRuby('KX-15 :: 仮名練習《かなれんしゅう》'), this.MX, 46, text);
+
+    this._kanaItems = [];
+    for (var i = 0; i < STUDY_KANA.length; i++) {
+      var y = 130 + i * 44;
+      var rect = { x: this.MX - 8, y: y - 8, w: 420, h: 38 };
+      var hv = this._hitRect(rect, this._px, this._py);
+      this._kanaItems.push({ idx: i, rect: rect });
+      var units = hv
+        ? [{ t: '> 『' }].concat(parseRuby(KANA_LABELS[i])).concat([{ t: '』' }])
+        : [{ t: '> ' }].concat(parseRuby(KANA_LABELS[i]));
+      this._drawUnits(ctx, units, this.MX, y, hv ? bright : text);
+
+      // 右侧：字数 ＋ 累计正解
+      var rec = store.kana[i];
+      var info = STUDY_KANA[i].items.length + ' 字';
+      if (rec && rec.total > 0) info += ' ・ 正解 ' + rec.ok + '/' + rec.total;
+      ctx.font = this.fontSm;
+      ctx.fillStyle = dim;
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'right';
+      ctx.fillText(info, this.W - this.MX, y + 3);
+      ctx.textAlign = 'left';
+    }
+
+    this._backBtnRect = this._drawNavButton(ctx, parseRuby('[戻《もど》る]'), this.MX, 424);
+    this._drawClockBR(ctx);
+  },
+
+  /* ---------- 答题页（假名 / 语汇） ---------- */
+  _drawQuiz: function (ctx, ms) {
+    var qz = this._quiz;
+    if (!qz) { this.phase = 'study'; return; }
+    var W = this.W, H = this.H;
+    ctx.fillStyle = this.color('bg');
+    ctx.fillRect(0, 0, W, H);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+    var dim = this.color('dim');
+    var text = this.color('text');
+    var bright = this.color('bright');
+
+    // 标题
+    var title = qz.mode === 'kana'
+      ? 'KX-15 :: 仮名練習《かなれんしゅう》'
+      : 'KX-15 :: 語彙記憶《ごいきおく》';
+    this._drawUnits(ctx, parseRuby(title), this.MX, 46, text);
+
+    // 右上：阶段 / 范围 ＋ 本局统计
+    ctx.font = this.fontSm;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = dim;
+    var sub = qz.mode === 'kana' ? KANA_LABELS[qz.stage].replace(/《[^》]*》/g, '') : 'N1';
+    ctx.fillText(sub, W - this.MX, 40);
+    ctx.fillStyle = text;
+    ctx.fillText('正解 ' + qz.ok + ' / ' + qz.total, W - this.MX, 60);
+    ctx.textAlign = 'left';
+
+    // 题干
+    ctx.textAlign = 'center';
+    if (qz.mode === 'kana') {
+      ctx.font = '64px "MS Gothic", "Yu Gothic", sans-serif';
+      ctx.fillStyle = bright;
+      ctx.fillText(qz.q.main, W / 2, H / 2 - 150);
+    } else {
+      ctx.font = '36px "MS Gothic", "Yu Gothic", sans-serif';
+      ctx.fillStyle = bright;
+      ctx.fillText(qz.q.main, W / 2, H / 2 - 150);
+      ctx.font = '19px "MS Gothic", "Yu Gothic", monospace';
+      ctx.fillStyle = dim;
+      ctx.fillText(qz.q.sub, W / 2, H / 2 - 106);
+    }
+    ctx.textAlign = 'left';
+
+    // 提示 / 反馈
+    if (qz.chosen < 0) {
+      this._drawUnits(ctx, parseRuby(qz.mode === 'kana' ? 'この仮名《かな》の読みを選べ' : 'この語《ご》の意味《いみ》を選べ'),
+        W / 2, H / 2 - 62, dim, 'center');
+    } else {
+      var ok = qz.chosen === qz.ans;
+      var fb = ok
+        ? '○ 正解《せいかい》'
+        : '× 残念《ざんねん》 ─ 正解《せいかい》: ' + qz.q.ansText;
+      this._drawUnits(ctx, parseRuby(fb), W / 2, H / 2 - 62, ok ? bright : text, 'center');
+    }
+
+    // 选项（四行；已答后正确项亮、错误项暗）
+    var x0 = Math.round((W - 320) / 2);
+    this._quizOpts = [];
+    for (var i = 0; i < qz.opts.length; i++) {
+      var y = H / 2 - 10 + i * 34;
+      var rect = { x: x0 - 12, y: y - 6, w: 344, h: 30 };
+      this._quizOpts.push({ idx: i, rect: rect });
+      var hv = qz.chosen < 0 && this._hitRect(rect, this._px, this._py);
+      var color = text;
+      if (qz.chosen >= 0) {
+        color = (i === qz.ans) ? bright : dim;
+      } else if (hv) {
+        color = bright;
+      }
+      ctx.font = this.font;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 1;
+      ctx.fillText((i + 1) + '. ' + qz.opts[i], x0, y);
+    }
+
+    this._backBtnRect = this._drawNavButton(ctx, parseRuby('[戻《もど》る]'), this.MX, 424);
+    this._drawClockBR(ctx);
   },
 
   /* ---------- 菜单背景图：四边羽化自然融入 ---------- */
@@ -1796,7 +2128,6 @@ CRT.Stage.prototype = {
     ctx.fillRect(0, 0, this.W, this.H);
     ctx.textBaseline = 'top';
     ctx.globalAlpha = 1;
-    var dim = this.color('dim');
 
     // 左上角状态小字（亮度统一到冷启动文字标准：正文=text 色满亮）
     this._drawUnits(ctx, parseRuby('KX-15 :: 待機中《たいきちゅう》'), this.MX, 46, this.color('text'));
@@ -1807,38 +2138,29 @@ CRT.Stage.prototype = {
     // 底部提示
     this._drawUnits(ctx, parseRuby('画面《がめん》を押してください'), this.MX, this.H - 52, this.color('text'));
 
-    // ---- 中央：当前管理员 - 円森 綾夕 ----
+    // ---- 中央：欢迎语（两行；26px 与旧「円森 綾夕」同尺寸；保留呼吸与块状光标） ----
     var cx = this.W / 2;
     var blinkOn = (Math.floor(ms / 1300) % 2) === 0;
+    var oldFont = this.font, oldRuby = this.fontRuby, oldGap = this._rubyGap;
+    this.font = '26px "MS Gothic", "Yu Gothic", "SimHei", sans-serif';
+    this.fontRuby = '12px "MS Gothic", "Yu Gothic", monospace';
+    this._rubyGap = 14;
 
-    this._drawUnits(ctx, parseRuby('管理者《かんりしゃ》'), cx, this.H / 2 - 88, dim, 'center');
+    var y1 = Math.round(this.H / 2) - 40;   // 第一行：ようこそ、
+    var y2 = y1 + 52;                       // 第二行：円森 綾夕のインターネット世界へ。
+    var units2 = parseRuby('円森《まどかもり》 綾夕《あやゆ》のインターネット世界《せかい》へ。');
 
-    ctx.font = this.fontLg;
-    ctx.fillStyle = this.color('bright');
-    ctx.textAlign = 'center';
-    ctx.fillText('円森 綾夕', cx, this.H / 2 - 66);
-    ctx.textAlign = 'left';
-
-    ctx.font = this.fontSm;
-    ctx.fillStyle = this.color('text');
-    ctx.textAlign = 'center';
-    ctx.fillText('まどかもり あやゆ', cx, this.H / 2 - 30);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = dim;
-    ctx.textAlign = 'center';
-    ctx.fillText('Madokamori Ayayu', cx, this.H / 2 - 12);
-    ctx.textAlign = 'left';
-
-    // 闪烁的待命信息 + 块状光标（与冷启动文字同亮度）
     ctx.globalAlpha = blinkOn ? 1.0 : 0.35;
-    var msgUnits = parseRuby('信号《しんごう》を待っています');
-    this._drawUnits(ctx, msgUnits, cx, this.H / 2 + 26, this.color('text'), 'center');
-
+    this._drawUnits(ctx, [{ t: 'ようこそ、' }], cx, y1, this.color('bright'), 'center');
+    this._drawUnits(ctx, units2, cx, y2, this.color('bright'), 'center');
     if (blinkOn) {
-      var tw = this._unitsWidth(ctx, msgUnits);
-      ctx.fillStyle = this.color('text');
-      ctx.fillRect(cx + tw / 2 + 6, this.H / 2 + 27, 10, 17);
+      var tw2 = this._unitsWidth(ctx, units2);
+      ctx.fillStyle = this.color('bright');
+      ctx.fillRect(cx + tw2 / 2 + 3, y2 + 2, 5, 24);   // 窄竖条光标，避开 CRT 过扫描裁切区
     }
     ctx.globalAlpha = 1;
+    this.font = oldFont;
+    this.fontRuby = oldRuby;
+    this._rubyGap = oldGap;
   }
 };
